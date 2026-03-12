@@ -42,6 +42,20 @@ class FileRepository extends AbstractRepository
     protected $objectType = File::class;
 
     /**
+     * Runtime cache for findByRelation() results, also populated by findByRelationBatch().
+     *
+     * Stores previously resolved FileReference arrays keyed by a composite string
+     * of table name, field name, record UID, and workspace ID (format:
+     * "{tableName}_{fieldName}_{uid}_{workspaceId}"). This avoids redundant DB
+     * queries when the same relation is requested multiple times during a single
+     * request — e.g. when FilesProcessor and RelationHandler both resolve the
+     * same tt_content media field.
+     *
+     * @var array<string, FileReference[]>
+     */
+    protected array $findByRelationCache = [];
+
+    /**
      * Main File object storage table. Note that this repository also works on
      * the sys_file_reference table when returning FileReference objects.
      *
@@ -71,6 +85,11 @@ class FileRepository extends AbstractRepository
      */
     public function findByRelation($tableName, $fieldName, $uid, ?int $workspaceId = null)
     {
+        $cacheKey = $tableName . '_' . $fieldName . '_' . $uid . '_' . ($workspaceId ?? -1);
+        if (isset($this->findByRelationCache[$cacheKey])) {
+            return $this->findByRelationCache[$cacheKey];
+        }
+
         $itemList = [];
         if (!MathUtility::canBeInterpretedAsInteger($uid)) {
             throw new \InvalidArgumentException(
@@ -137,7 +156,94 @@ class FileRepository extends AbstractRepository
             $itemList = $this->reapplySorting($itemList);
         }
 
+        $this->findByRelationCache[$cacheKey] = $itemList;
+
         return $itemList;
+    }
+
+    /**
+     * Batch-load sys_file_reference records for multiple parent UIDs in a single query.
+     *
+     * Pre-populates {@see $findByRelationCache} so that subsequent calls to
+     * {@see findByRelation()} return cached results without additional DB queries.
+     * UIDs that are already present in the cache are skipped automatically.
+     *
+     * In frontend context, {@see FrontendRestrictionContainer} is applied so that
+     * hidden, deleted, and access-restricted references are excluded — matching
+     * the behaviour of findByRelation() in FE mode.
+     *
+     * Each matching row is converted to a {@see FileReference} object via the
+     * ResourceFactory. References pointing to non-existing files are silently
+     * discarded (same as findByRelation()).
+     *
+     * @param string $tableName Parent table (e.g. 'pages', 'tt_content')
+     * @param string $fieldName Field name (e.g. 'media', 'image', 'assets')
+     * @param int[]  $uids      Parent record UIDs to batch-load references for
+     */
+    public function findByRelationBatch(string $tableName, string $fieldName, array $uids): void
+    {
+        if ($uids === []) {
+            return;
+        }
+
+        // Filter out UIDs that are already cached
+        $uncachedUids = [];
+        foreach ($uids as $uid) {
+            $cacheKey = $tableName . '_' . $fieldName . '_' . $uid . '_-1';
+            if (!isset($this->findByRelationCache[$cacheKey])) {
+                $uncachedUids[] = (int)$uid;
+            }
+        }
+
+        if ($uncachedUids === []) {
+            return;
+        }
+
+        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getQueryBuilderForTable('sys_file_reference');
+
+        if ($this->getEnvironmentMode() === 'FE') {
+            $queryBuilder->setRestrictions(
+                GeneralUtility::makeInstance(FrontendRestrictionContainer::class)
+            );
+        }
+
+        $rows = $queryBuilder
+            ->select('*')
+            ->from('sys_file_reference')
+            ->where(
+                $queryBuilder->expr()->in(
+                    'uid_foreign',
+                    $queryBuilder->createNamedParameter($uncachedUids, Connection::PARAM_INT_ARRAY)
+                ),
+                $queryBuilder->expr()->eq(
+                    'tablenames',
+                    $queryBuilder->createNamedParameter($tableName)
+                ),
+                $queryBuilder->expr()->eq(
+                    'fieldname',
+                    $queryBuilder->createNamedParameter($fieldName)
+                )
+            )
+            ->orderBy('sorting_foreign')
+            ->executeQuery()
+            ->fetchAllAssociative();
+
+        // Initialize all requested UIDs with empty arrays
+        foreach ($uncachedUids as $uid) {
+            $cacheKey = $tableName . '_' . $fieldName . '_' . $uid . '_-1';
+            $this->findByRelationCache[$cacheKey] = [];
+        }
+
+        // Group rows by uid_foreign and create FileReference objects
+        foreach ($rows as $row) {
+            $cacheKey = $tableName . '_' . $fieldName . '_' . (int)$row['uid_foreign'] . '_-1';
+            try {
+                $this->findByRelationCache[$cacheKey][] = $this->factory->getFileReferenceObject((int)$row['uid'], $row);
+            } catch (ResourceDoesNotExistException $e) {
+                // File reference points to non-existing file — skip silently
+            }
+        }
     }
 
     /**
