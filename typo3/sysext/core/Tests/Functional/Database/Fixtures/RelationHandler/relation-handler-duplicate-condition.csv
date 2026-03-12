@@ -1,0 +1,12 @@
+"tt_content"
+,"uid","pid","deleted","hidden","sorting","sys_language_uid","l18n_parent","t3ver_wsid","t3ver_oid","t3ver_state","header","CType"
+,1,1,0,0,256,0,0,0,0,0,"Test content element","textmedia"
+"sys_file"
+,"uid","pid","storage","identifier","name","sha1","size","mime_type","missing"
+,1,0,1,"/test.jpg","test.jpg","da39a3ee5e6b4b0d3255bfef95601890afd80709",1024,"image/jpeg",0
+"sys_file_reference"
+,"uid","pid","uid_local","uid_foreign","tablenames","fieldname","sorting_foreign","deleted","hidden","sys_language_uid","l10n_parent","t3ver_wsid","t3ver_oid","t3ver_state"
+,1,1,1,1,"tt_content","image",1,0,0,0,0,0,0,0
+"pages"
+,"uid","pid","deleted","hidden","sorting","sys_language_uid","l10n_parent","t3ver_wsid","t3ver_oid","t3ver_state","slug","title","doktype"
+,1,0,0,0,256,0,0,0,0,0,"/","Root",1

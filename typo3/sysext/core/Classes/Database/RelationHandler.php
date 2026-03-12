@@ -886,6 +886,11 @@ class RelationHandler
         }
         // Add additional where clause if foreign_match_fields are defined
         foreach ($foreign_match_fields as $field => $value) {
+            // Skip if this field is already covered by foreign_table_field
+            // to avoid duplicate WHERE conditions like "tablenames = 'x' AND tablenames = 'x'"
+            if ($field === $foreign_table_field) {
+                continue;
+            }
             $queryBuilder->andWhere(
                 $queryBuilder->expr()->eq($field, $queryBuilder->createNamedParameter($value))
             );
