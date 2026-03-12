@@ -826,7 +826,7 @@ class RelationHandler
      */
     protected function readForeignField($uid, $conf)
     {
-        if ($this->useLiveParentIds) {
+        if ($this->useLiveParentIds && $this->getWorkspaceId() > 0) {
             $uid = $this->getLiveDefaultId($this->currentTable, $uid);
         }
 
