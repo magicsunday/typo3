@@ -995,7 +995,26 @@ class PageRepository implements LoggerAwareInterface
         }
 
         // Finally load language overlays
-        return $this->getPagesOverlay($pages);
+        $result = $this->getPagesOverlay($pages);
+
+        // Pre-populate getPage() runtime cache with fully processed rows
+        // to avoid individual SELECT queries during HMENU rendering.
+        // Guards: only when all fields were selected and group access is active,
+        // otherwise the cached data shape or access level would not match getPage().
+        if ($fields === '*' && !$disableGroupAccessCheck) {
+            $prefetchCache = $this->getRuntimeCache();
+            foreach ($result as $page) {
+                $prefetchUid = (int)$page['uid'];
+                $pageCacheId = 'PageRepository_getPage_' . md5(
+                    implode('-', [$prefetchUid, $this->where_groupAccess, $this->where_hid_del, $this->sys_language_uid])
+                );
+                if ($prefetchCache->get($pageCacheId) === false) {
+                    $prefetchCache->set($pageCacheId, $page);
+                }
+            }
+        }
+
+        return $result;
     }
 
     /**
