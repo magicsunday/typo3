@@ -56,6 +56,28 @@ class RootlineUtility
     protected FrontendInterface $runtimeCache;
 
     /**
+     * Static cache holding batch-prefetched sys_file_reference UIDs for the
+     * pages.media field, grouped by page UID.
+     *
+     * Populated once per request by {@see prefetchFileRelations()} and consumed
+     * in {@see enrichWithRelationFields()} to bypass per-page RelationHandler
+     * queries for the 'media' column. Pages without any media references are
+     * simply absent from this array (treated as empty via null-coalescing).
+     *
+     * @var array<int, int[]> Key = page UID, Value = ordered list of sys_file_reference UIDs
+     */
+    protected static array $prefetchedFileRelations = [];
+
+    /**
+     * Flag indicating whether {@see prefetchFileRelations()} has already run
+     * during the current request lifecycle.
+     *
+     * Checked in {@see generateRootlineCache()} to ensure the batch query
+     * executes at most once, regardless of how many rootline resolutions occur.
+     */
+    protected static bool $fileRelationsPrefetched = false;
+
+    /**
      * Default fields to fetch when populating rootline data, will be merged dynamically
      * with $GLOBALS['TYPO3_CONF_VARS']['FE']['addRootLineFields'] in getRecordArray().
      *
@@ -237,6 +259,14 @@ class RootlineUtility
             // Ensure that only fields defined in $rootlineFields (and "addRootLineFields") are actually evaluated
             if (array_key_exists($column, $pageRecord) && $this->columnHasRelationToResolve($configuration)) {
                 $fieldConfig = $configuration['config'];
+                // Use prefetched file relations if available (batch-loaded in generateRootlineCache).
+                // Only applies to the 'media' column — the only type=file field in the pages rootline field set.
+                if ($column === 'media' && ($fieldConfig['type'] ?? '') === 'file'
+                    && self::$fileRelationsPrefetched
+                ) {
+                    $pageRecord[$column] = implode(',', self::$prefetchedFileRelations[$uid] ?? []);
+                    continue;
+                }
                 $relatedUids = [];
                 if (($fieldConfig['MM'] ?? false) || (!empty($fieldConfig['foreign_table'] ?? $fieldConfig['allowed'] ?? ''))) {
                     $relationHandler = GeneralUtility::makeInstance(RelationHandler::class);
@@ -293,6 +323,10 @@ class RootlineUtility
      */
     protected function generateRootlineCache(): void
     {
+        // Batch-prefetch ALL pages/media file relations (once per request)
+        if (!self::$fileRelationsPrefetched) {
+            self::prefetchFileRelations();
+        }
         $page = $this->getRecordArray($this->pageUid);
         // If the current page is a mounted (according to the MP parameter) handle the mount-point
         if ($this->isMountedPage()) {
@@ -483,5 +517,57 @@ class RootlineUtility
     {
         return GeneralUtility::makeInstance(ConnectionPool::class)
             ->getQueryBuilderForTable($tableName);
+    }
+
+    /**
+     * Prefetch ALL pages/media file relations in a single query.
+     *
+     * Loads every non-deleted, visible sys_file_reference record where
+     * tablenames='pages' and fieldname='media', ordered by sorting_foreign.
+     * Results are grouped by uid_foreign (page UID) into
+     * {@see $prefetchedFileRelations} and the {@see $fileRelationsPrefetched}
+     * flag is set to prevent repeated execution.
+     *
+     * This replaces hundreds of individual RelationHandler queries that would
+     * otherwise fire during rootline resolution for navigation menus — each
+     * page in the menu triggers enrichWithRelationFields() which would issue
+     * its own query for the 'media' column.
+     *
+     * Restriction strategy: uses only DeletedRestriction (not
+     * FrontendRestrictionContainer) plus explicit hidden/workspace filters,
+     * because rootline resolution operates outside the normal FE restriction
+     * scope and needs to include time-restricted records that may be valid
+     * in different contexts.
+     */
+    protected static function prefetchFileRelations(): void
+    {
+        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)
+            ->getQueryBuilderForTable('sys_file_reference');
+        $queryBuilder->getRestrictions()->removeAll()
+            ->add(GeneralUtility::makeInstance(DeletedRestriction::class));
+
+        $rows = $queryBuilder
+            ->select('uid', 'uid_foreign')
+            ->from('sys_file_reference')
+            ->where(
+                $queryBuilder->expr()->eq('tablenames', $queryBuilder->createNamedParameter('pages')),
+                $queryBuilder->expr()->eq('fieldname', $queryBuilder->createNamedParameter('media')),
+                $queryBuilder->expr()->eq('hidden', 0),
+                $queryBuilder->expr()->eq('t3ver_wsid', 0),
+                $queryBuilder->expr()->or(
+                    $queryBuilder->expr()->eq('t3ver_oid', 0),
+                    $queryBuilder->expr()->eq('t3ver_state', 4)
+                )
+            )
+            ->orderBy('sorting_foreign')
+            ->executeQuery()
+            ->fetchAllAssociative();
+
+        // Group results by uid_foreign
+        foreach ($rows as $row) {
+            self::$prefetchedFileRelations[(int)$row['uid_foreign']][] = (int)$row['uid'];
+        }
+
+        self::$fileRelationsPrefetched = true;
     }
 }
