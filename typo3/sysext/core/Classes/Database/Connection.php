@@ -357,7 +357,8 @@ class Connection extends \Doctrine\DBAL\Connection implements LoggerAwareInterfa
     public function getPlatformServerVersion(): string
     {
         $platform = $this->getDatabasePlatform();
-        $version = trim($this->getServerVersion());
+        $params = $this->getParams();
+        $version = trim($params['serverVersion'] ?? $this->getServerVersion());
         if ($version !== '') {
             $version = ' ' . $version;
         }
